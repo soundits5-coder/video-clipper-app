@@ -159,6 +159,32 @@
         </div>
       </div>
 
+      <!-- Device Optimization / Hardware Profile Mode -->
+      <div class="config-group">
+        <label class="group-label">
+          <span>⚡ Device & Hardware Optimization Profile:</span>
+          <span class="hint" id="deviceProfileHint" style="color: #38bdf8;">Auto-Detected: Desktop Mode</span>
+        </label>
+        
+        <div class="device-profile-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 8px;">
+          <button type="button" class="aspect-btn active" id="profilePcBtn" data-profile="pc">
+            <span class="aspect-icon">💻</span>
+            <div class="aspect-details">
+              <strong>High-End PC / Laptop Mode</strong>
+              <span style="color: #38bdf8;">Full AI Tracking • 1080p Full HD • Maximum Quality</span>
+            </div>
+          </button>
+
+          <button type="button" class="aspect-btn" id="profileMobileBtn" data-profile="mobile">
+            <span class="aspect-icon">📱</span>
+            <div class="aspect-details">
+              <strong>Phone / Low-RAM Mode (4-6 GB)</strong>
+              <span style="color: #34d399;">Lightweight Engine • Zero Crash • Smooth & Fast</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
       <!-- Aspect Ratio & AI Smart Reframe -->
       <div class="config-group">
         <label class="group-label">

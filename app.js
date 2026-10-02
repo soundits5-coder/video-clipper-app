@@ -20,6 +20,7 @@
     targetAspectRatio: 'original',
     exportQuality: 'original',
     renderSpeedMultiplier: 8,
+    deviceProfile: 'pc', // 'pc' (High-End Full AI + 1080p) or 'mobile' (Lightweight Fast, 0-crash, 480p/720p)
     generatedClips: [],
     isProcessing: false,
     ffmpegInstance: null,
@@ -37,6 +38,10 @@
   const metaSize = document.getElementById('metaSize');
   const metaResolution = document.getElementById('metaResolution');
   const changeVideoBtn = document.getElementById('changeVideoBtn');
+
+  const profilePcBtn = document.getElementById('profilePcBtn');
+  const profileMobileBtn = document.getElementById('profileMobileBtn');
+  const deviceProfileHint = document.getElementById('deviceProfileHint');
 
   const previewSection = document.getElementById('previewSection');
   const mainVideo = document.getElementById('mainVideo');
@@ -343,6 +348,50 @@
     });
   });
 
+  // Device & Hardware Profile Handlers (PC vs Phone/Low-RAM Mode)
+  function setDeviceProfile(profile, isAuto = false) {
+    state.deviceProfile = profile;
+    if (profile === 'mobile') {
+      if (profilePcBtn) profilePcBtn.classList.remove('active');
+      if (profileMobileBtn) profileMobileBtn.classList.add('active');
+      if (deviceProfileHint) {
+        deviceProfileHint.textContent = isAuto ? 'Auto-Detected: Phone Mode (Optimized)' : 'Phone Mode Selected (Fast & Zero-Crash)';
+        deviceProfileHint.style.color = '#34d399';
+      }
+      // If quality is currently set to Original or 1080p, automatically choose 720p for fast mobile processing
+      if (state.exportQuality === 'original' || state.exportQuality === '1080') {
+        const p720 = document.querySelector('.quality-pill[data-quality="720"]');
+        if (p720) p720.click();
+      }
+    } else {
+      if (profileMobileBtn) profileMobileBtn.classList.remove('active');
+      if (profilePcBtn) profilePcBtn.classList.add('active');
+      if (deviceProfileHint) {
+        deviceProfileHint.textContent = isAuto ? 'Auto-Detected: PC/Laptop Mode' : 'High-End PC Mode Selected (Full AI)';
+        deviceProfileHint.style.color = '#38bdf8';
+      }
+    }
+  }
+
+  if (profilePcBtn) {
+    profilePcBtn.addEventListener('click', () => setDeviceProfile('pc', false));
+  }
+  if (profileMobileBtn) {
+    profileMobileBtn.addEventListener('click', () => setDeviceProfile('mobile', false));
+  }
+
+  // Auto-detect mobile devices or low hardware concurrency
+  const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+                         (window.innerWidth <= 768) ||
+                         (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
+                         (navigator.deviceMemory && navigator.deviceMemory <= 4);
+
+  if (isMobileDevice) {
+    setDeviceProfile('mobile', true);
+  } else {
+    setDeviceProfile('pc', true);
+  }
+
   // Recalculate Slices & Slicing Timings with Exact Mathematics
   function recalculateSlices() {
     if (!state.videoDuration) return;
@@ -622,11 +671,13 @@
             outHeight = th;
             outWidth = Math.round(th * targetAspect);
           } else {
+            // In Mobile / Low-RAM Mode, cap maximum dimension to 720p to prevent mobile browser OOM crash
+            const maxDimension = (state.deviceProfile === 'mobile') ? 720 : 1080;
             if (targetAspect > 1) {
-              outHeight = Math.min(srcHeight, 1080);
+              outHeight = Math.min(srcHeight, maxDimension);
               outWidth = Math.round(outHeight * targetAspect);
             } else {
-              outWidth = Math.min(srcWidth, 1080);
+              outWidth = Math.min(srcWidth, maxDimension);
               outHeight = Math.round(outWidth / targetAspect);
             }
           }
@@ -700,18 +751,32 @@
             }
           };
 
+          // In Mobile Mode, precalculate fixed center crop to avoid heavy per-frame computer vision
+          let staticCenterCrop = null;
+          if (state.deviceProfile === 'mobile' && state.targetAspectRatio !== 'original' && window.smartTracker) {
+            staticCenterCrop = window.smartTracker.calculateCrop(srcWidth, srcHeight, targetAspect, 0.5, 0.5);
+          }
+
           let animId = null;
           function renderFrame() {
             if (!isFinished && !video.paused && !video.ended) {
-              if (state.targetAspectRatio !== 'original' && window.smartTracker) {
-                // AI Face & Subject Centroid Tracking
-                const focal = window.smartTracker.trackSubject(video);
-                const crop = window.smartTracker.calculateCrop(srcWidth, srcHeight, targetAspect, focal.x, focal.y);
-
-                // Draw smartly reframed viewport
-                ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
-                if (monitorCtx) {
-                  monitorCtx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
+              if (state.targetAspectRatio !== 'original') {
+                if (state.deviceProfile === 'mobile' && staticCenterCrop) {
+                  // Fast Center Crop (Zero CPU/RAM overhead on 4-6 GB mobile)
+                  ctx.drawImage(video, staticCenterCrop.sx, staticCenterCrop.sy, staticCenterCrop.sw, staticCenterCrop.sh, 0, 0, outWidth, outHeight);
+                  if (monitorCtx) {
+                    monitorCtx.drawImage(video, staticCenterCrop.sx, staticCenterCrop.sy, staticCenterCrop.sw, staticCenterCrop.sh, 0, 0, outWidth, outHeight);
+                  }
+                } else if (window.smartTracker) {
+                  // High-End PC Mode: Full real-time AI Face & Subject centroid tracking
+                  const focal = window.smartTracker.trackSubject(video);
+                  const crop = window.smartTracker.calculateCrop(srcWidth, srcHeight, targetAspect, focal.x, focal.y);
+                  ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
+                  if (monitorCtx) {
+                    monitorCtx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
+                  }
+                } else {
+                  ctx.drawImage(video, 0, 0, outWidth, outHeight);
                 }
               } else {
                 ctx.drawImage(video, 0, 0, outWidth, outHeight);

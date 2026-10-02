@@ -114,6 +114,26 @@
     getFFmpeg().catch(() => {});
   }, 1000);
 
+  // Global Active Resource Registry & Blob URL Tracker
+  const activeBlobUrls = new Set();
+  let currentRenderStream = null;
+  let currentMediaRecorder = null;
+  let currentRenderAnimId = null;
+  let currentRenderClockTimer = null;
+  let currentWorkingCanvas = null;
+
+  function trackBlobUrl(url) {
+    if (url) activeBlobUrls.add(url);
+    return url;
+  }
+
+  function revokeAllBlobUrls() {
+    activeBlobUrls.forEach(url => {
+      try { URL.revokeObjectURL(url); } catch (e) {}
+    });
+    activeBlobUrls.clear();
+  }
+
   // Web Audio API Pipeline for Guaranteed Mobile & iOS Audio Capture (Option A)
   let audioCtx = null;
   let audioSourceNode = null;
@@ -125,8 +145,9 @@
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) return null;
 
-      if (!audioCtx) {
+      if (!audioCtx || audioCtx.state === 'closed') {
         audioCtx = new AudioContextClass();
+        audioSourceNode = null;
       }
 
       if (audioCtx.state === 'suspended') {
@@ -153,6 +174,89 @@
       return null;
     }
   }
+
+  // FIX A: Unified Cleanup Pipeline (called at start of every new run, on error, on completion, and pagehide)
+  function cleanupAppResources(fullReset = false) {
+    // 1. Stop all tracks of active MediaStream
+    if (currentRenderStream) {
+      try {
+        currentRenderStream.getTracks().forEach(t => {
+          t.stop();
+        });
+      } catch (e) {}
+      currentRenderStream = null;
+    }
+
+    // 2. Stop MediaRecorder if running
+    if (currentMediaRecorder) {
+      try {
+        if (currentMediaRecorder.state !== 'inactive') {
+          currentMediaRecorder.stop();
+        }
+      } catch (e) {}
+      currentMediaRecorder = null;
+    }
+
+    // 3. Cancel animation frames & intervals
+    if (currentRenderAnimId) {
+      cancelAnimationFrame(currentRenderAnimId);
+      currentRenderAnimId = null;
+    }
+    if (currentRenderClockTimer) {
+      clearInterval(currentRenderClockTimer);
+      currentRenderClockTimer = null;
+    }
+
+    // 4. Reset working canvases (release memory from GPU/RAM)
+    if (currentWorkingCanvas) {
+      try {
+        currentWorkingCanvas.width = 0;
+        currentWorkingCanvas.height = 0;
+      } catch (e) {}
+      currentWorkingCanvas = null;
+    }
+
+    // 5. Video pause and reset
+    if (renderVideo) {
+      try {
+        renderVideo.pause();
+        if (fullReset) {
+          renderVideo.removeAttribute('src');
+          renderVideo.load();
+        }
+      } catch (e) {}
+    }
+
+    // 6. Close AudioContext on fullReset / pagehide if needed
+    if (fullReset && audioCtx) {
+      try {
+        audioCtx.close().catch(() => {});
+      } catch (e) {}
+      audioCtx = null;
+      audioSourceNode = null;
+      audioDestNode = null;
+      audioGainNode = null;
+    }
+  }
+
+  // FIX D: Visibility change & pagehide listeners
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && state.isProcessing) {
+      console.warn("Tab hidden during rendering. Pausing to avoid runaway background throttling.");
+      if (renderVideo && !renderVideo.paused) {
+        renderVideo.pause();
+      }
+    } else if (!document.hidden && state.isProcessing) {
+      if (renderVideo && renderVideo.paused) {
+        renderVideo.play().catch(() => {});
+      }
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    cleanupAppResources(true);
+    revokeAllBlobUrls();
+  });
 
   // Formatting Helpers
   function formatTime(seconds) {
@@ -518,6 +622,9 @@
       return;
     }
 
+    // Clean previous run's media/canvases/streams before starting new run
+    cleanupAppResources(false);
+
     // Crucial for iOS Safari / iOS Chrome: Unlock and resume AudioContext on user gesture
     initWebAudioPipeline();
 
@@ -537,9 +644,10 @@
     } catch (err) {
       console.error("Export process failed:", err);
       progressStatusText.textContent = `Error: ${err.message || 'Processing error'}`;
+      cleanupAppResources(false);
     } finally {
       state.isProcessing = false;
-      renderVideo.pause();
+      cleanupAppResources(false);
     }
   });
 
@@ -615,13 +723,12 @@
       }
       
       // Derive the correct extension from the actual container the browser produced.
-      // MediaRecorder on most browsers outputs video/webm even when mp4 is preferred.
-      // Saving a WebM blob as .mp4 causes broken/refused downloads on mobile & some desktops.
       const blobExt = finalBlob.type.includes('mp4') ? 'mp4' : 'webm';
+      const clipBlobUrl = trackBlobUrl(URL.createObjectURL(finalBlob));
       const clipObj = {
         index: i + 1,
         blob: finalBlob,
-        url: URL.createObjectURL(finalBlob),
+        url: clipBlobUrl,
         start: slice.start,
         end: slice.end,
         duration: slice.duration,
@@ -665,18 +772,50 @@
     });
   }
 
+  // Helper: Reliable Promise-wrapped video seek with 5s timeout & 1 retry (Fix B)
+  function seekVideoWithTimeout(video, targetTime, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      let resolved = false;
+      let timer = null;
+
+      const onSeeked = () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        video.removeEventListener('seeked', onSeeked);
+        resolve();
+      };
+
+      timer = setTimeout(() => {
+        if (resolved) return;
+        video.removeEventListener('seeked', onSeeked);
+        console.warn(`Seek to ${targetTime}s timed out. Retrying once...`);
+        // Retry seek once with small offset
+        const retryHandler = () => {
+          clearTimeout(retryTimer);
+          video.removeEventListener('seeked', retryHandler);
+          resolve();
+        };
+        const retryTimer = setTimeout(() => {
+          video.removeEventListener('seeked', retryHandler);
+          reject(new Error(`Video seek timed out at ${targetTime}s. Please check video file.`));
+        }, 3000);
+        video.addEventListener('seeked', retryHandler, { once: true });
+        video.currentTime = targetTime;
+      }, timeoutMs);
+
+      video.addEventListener('seeked', onSeeked, { once: true });
+      video.currentTime = targetTime;
+    });
+  }
+
   // Accurate Extraction Method: Uses dedicated background renderVideo
   function extractClipAccurate(startTime, endTime, targetDuration, clipIndex, totalClips, onProgress) {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       const video = renderVideo;
-      // Do NOT set video.muted = true because Web Audio API captures from the element's output.
-      // Audio silence is handled cleanly by audioGainNode.gain.value = 0.0001
       video.muted = false;
       video.volume = 1.0;
-      
-      // Video must render at exact 1.0x original speed and frame rate
       video.playbackRate = 1.0;
-      video.currentTime = startTime;
 
       if (renderClipBadge) {
         renderClipBadge.textContent = `Clip ${clipIndex} of ${totalClips}`;
@@ -696,203 +835,218 @@
 
       function cleanup() {
         clearTimeout(safetyTimer);
-        video.pause();
+        cleanupAppResources(false);
       }
 
-      const onSeekedHandler = () => {
-        video.removeEventListener('seeked', onSeekedHandler);
+      // Fix B: Safe Promise-wrapped seek with 5s timeout
+      try {
+        await seekVideoWithTimeout(video, startTime, 5000);
+      } catch (seekErr) {
+        cleanup();
+        reject(seekErr);
+        return;
+      }
 
-        try {
-          const srcWidth = video.videoWidth || 1280;
-          const srcHeight = video.videoHeight || 720;
-          let targetAspect = srcWidth / srcHeight;
+      try {
+        const srcWidth = video.videoWidth || 1280;
+        const srcHeight = video.videoHeight || 720;
+        let targetAspect = srcWidth / srcHeight;
 
-          if (state.targetAspectRatio === '16:9') targetAspect = 16 / 9;
-          else if (state.targetAspectRatio === '9:16') targetAspect = 9 / 16;
-          else if (state.targetAspectRatio === '1:1') targetAspect = 1.0;
+        if (state.targetAspectRatio === '16:9') targetAspect = 16 / 9;
+        else if (state.targetAspectRatio === '9:16') targetAspect = 9 / 16;
+        else if (state.targetAspectRatio === '1:1') targetAspect = 1.0;
 
-          let outWidth = srcWidth;
-          let outHeight = srcHeight;
-          const targetQuality = state.exportQuality;
+        let outWidth = srcWidth;
+        let outHeight = srcHeight;
+        const targetQuality = state.exportQuality;
 
-          if (targetQuality !== 'original') {
-            const th = parseInt(targetQuality, 10);
-            outHeight = th;
-            outWidth = Math.round(th * targetAspect);
+        // Fix C: When converting vertical 9:16 to landscape 16:9 or on mobile, strictly cap height to 720p
+        const isVerticalToLandscape = (srcHeight > srcWidth && targetAspect > 1.2);
+        const forceCap720 = isVerticalToLandscape || (state.deviceProfile === 'mobile');
+
+        if (targetQuality !== 'original') {
+          const th = parseInt(targetQuality, 10);
+          outHeight = th;
+          outWidth = Math.round(th * targetAspect);
+        } else {
+          const maxDimension = forceCap720 ? 720 : 1080;
+          if (targetAspect > 1) {
+            outHeight = Math.min(srcHeight, maxDimension);
+            outWidth = Math.round(outHeight * targetAspect);
           } else {
-            // In Mobile / Low-RAM Mode, cap maximum dimension to 720p to prevent mobile browser OOM crash
-            const maxDimension = (state.deviceProfile === 'mobile') ? 720 : 1080;
-            if (targetAspect > 1) {
-              outHeight = Math.min(srcHeight, maxDimension);
-              outWidth = Math.round(outHeight * targetAspect);
-            } else {
-              outWidth = Math.min(srcWidth, maxDimension);
-              outHeight = Math.round(outWidth / targetAspect);
+            outWidth = Math.min(srcWidth, maxDimension);
+            outHeight = Math.round(outWidth / targetAspect);
+          }
+        }
+
+        if (outWidth % 2 !== 0) outWidth++;
+        if (outHeight % 2 !== 0) outHeight++;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = outWidth;
+        canvas.height = outHeight;
+        currentWorkingCanvas = canvas;
+        const ctx = canvas.getContext('2d', { alpha: false });
+
+        // Live visual monitor canvas setup
+        let monitorCtx = null;
+        if (renderCanvasDisplay) {
+          renderCanvasDisplay.width = outWidth;
+          renderCanvasDisplay.height = outHeight;
+          monitorCtx = renderCanvasDisplay.getContext('2d', { alpha: false });
+        }
+
+        // Reset AI Subject Tracker focal center for this clip
+        if (window.smartTracker) {
+          window.smartTracker.reset();
+        }
+
+        // Fix C: Use 24-30 fps cap (24fps on vertical-to-landscape or mobile to prevent throttling)
+        const renderFps = forceCap720 ? 24 : 30;
+        const stream = canvas.captureStream(renderFps);
+        currentRenderStream = stream;
+
+        // Route audio via Web Audio API (Option A) for guaranteed iOS / Chrome / Android audio
+        const webAudio = initWebAudioPipeline();
+        let audioTrackAdded = false;
+
+        if (webAudio && webAudio.audioDestNode && webAudio.audioDestNode.stream) {
+          const webAudioTracks = webAudio.audioDestNode.stream.getAudioTracks();
+          if (webAudioTracks && webAudioTracks.length > 0) {
+            stream.addTrack(webAudioTracks[0]);
+            audioTrackAdded = true;
+          }
+        }
+
+        // Fallback if Web Audio was unavailable
+        if (!audioTrackAdded) {
+          let videoStream = null;
+          if (video.captureStream) videoStream = video.captureStream();
+          else if (video.mozCaptureStream) videoStream = video.mozCaptureStream();
+
+          if (videoStream) {
+            const audioTracks = videoStream.getAudioTracks();
+            if (audioTracks && audioTracks.length > 0) {
+              stream.addTrack(audioTracks[0]);
             }
           }
+        }
 
-          if (outWidth % 2 !== 0) outWidth++;
-          if (outHeight % 2 !== 0) outHeight++;
-
-          const canvas = document.createElement('canvas');
-          canvas.width = outWidth;
-          canvas.height = outHeight;
-          const ctx = canvas.getContext('2d', { alpha: false });
-
-          // Live visual monitor canvas setup
-          let monitorCtx = null;
-          if (renderCanvasDisplay) {
-            renderCanvasDisplay.width = outWidth;
-            renderCanvasDisplay.height = outHeight;
-            monitorCtx = renderCanvasDisplay.getContext('2d', { alpha: false });
+        // Pick MediaRecorder mimeType prioritizing MP4
+        const mimeTypes = [
+          'video/mp4;codecs=avc1,mp4a.40.2',
+          'video/mp4;codecs=avc1',
+          'video/mp4',
+          'video/webm;codecs=vp9,opus',
+          'video/webm;codecs=vp8,opus',
+          'video/webm'
+        ];
+        let chosenMime = mimeTypes.find(type => {
+          try {
+            return MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type);
+          } catch (e) {
+            return false;
           }
+        }) || '';
+        const options = chosenMime ? { mimeType: chosenMime } : {};
 
-          // Reset AI Subject Tracker focal center for this clip
-          if (window.smartTracker) {
-            window.smartTracker.reset();
+        const mediaRecorder = new MediaRecorder(stream, options);
+        currentMediaRecorder = mediaRecorder;
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            recordedChunks.push(e.data);
           }
+        };
 
-          const stream = canvas.captureStream(30);
-
-          // Route audio via Web Audio API (Option A) for guaranteed iOS / Chrome / Android audio
-          const webAudio = initWebAudioPipeline();
-          let audioTrackAdded = false;
-
-          if (webAudio && webAudio.audioDestNode && webAudio.audioDestNode.stream) {
-            const webAudioTracks = webAudio.audioDestNode.stream.getAudioTracks();
-            if (webAudioTracks && webAudioTracks.length > 0) {
-              stream.addTrack(webAudioTracks[0]);
-              audioTrackAdded = true;
-            }
+        mediaRecorder.onstop = () => {
+          cleanup();
+          if (!isFinished) {
+            isFinished = true;
+            const rawType = chosenMime || 'video/webm';
+            const rawBlob = new Blob(recordedChunks, { type: rawType });
+            resolve({ rawBlob, isMp4: rawType.includes('mp4') });
           }
+        };
 
-          // Fallback if Web Audio was unavailable
-          if (!audioTrackAdded) {
-            let videoStream = null;
-            if (video.captureStream) videoStream = video.captureStream();
-            else if (video.mozCaptureStream) videoStream = video.mozCaptureStream();
+        // In Mobile Mode, precalculate fixed center crop to avoid heavy per-frame computer vision
+        let staticCenterCrop = null;
+        if (state.deviceProfile === 'mobile' && state.targetAspectRatio !== 'original' && window.smartTracker) {
+          staticCenterCrop = window.smartTracker.calculateCrop(srcWidth, srcHeight, targetAspect, 0.5, 0.5);
+        }
 
-            if (videoStream) {
-              const audioTracks = videoStream.getAudioTracks();
-              if (audioTracks && audioTracks.length > 0) {
-                stream.addTrack(audioTracks[0]);
-              }
-            }
-          }
-
-          // Pick MediaRecorder mimeType prioritizing MP4 (essential on iOS WebKit where webm is unsupported)
-          const mimeTypes = [
-            'video/mp4;codecs=avc1,mp4a.40.2',
-            'video/mp4;codecs=avc1',
-            'video/mp4',
-            'video/webm;codecs=vp9,opus',
-            'video/webm;codecs=vp8,opus',
-            'video/webm'
-          ];
-          let chosenMime = mimeTypes.find(type => {
-            try {
-              return MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type);
-            } catch (e) {
-              return false;
-            }
-          }) || '';
-          const options = chosenMime ? { mimeType: chosenMime } : {};
-
-          const mediaRecorder = new MediaRecorder(stream, options);
-
-          mediaRecorder.ondataavailable = (e) => {
-            if (e.data && e.data.size > 0) {
-              recordedChunks.push(e.data);
-            }
-          };
-
-          mediaRecorder.onstop = () => {
-            cleanup();
-            if (!isFinished) {
-              isFinished = true;
-              const rawType = chosenMime || 'video/webm';
-              const rawBlob = new Blob(recordedChunks, { type: rawType });
-              resolve({ rawBlob, isMp4: rawType.includes('mp4') });
-            }
-          };
-
-          // In Mobile Mode, precalculate fixed center crop to avoid heavy per-frame computer vision
-          let staticCenterCrop = null;
-          if (state.deviceProfile === 'mobile' && state.targetAspectRatio !== 'original' && window.smartTracker) {
-            staticCenterCrop = window.smartTracker.calculateCrop(srcWidth, srcHeight, targetAspect, 0.5, 0.5);
-          }
-
-          let animId = null;
-          function renderFrame() {
-            if (!isFinished && !video.paused && !video.ended) {
-              if (state.targetAspectRatio !== 'original') {
-                if (state.deviceProfile === 'mobile' && staticCenterCrop) {
-                  // Fast Center Crop (Zero CPU/RAM overhead on 4-6 GB mobile)
-                  ctx.drawImage(video, staticCenterCrop.sx, staticCenterCrop.sy, staticCenterCrop.sw, staticCenterCrop.sh, 0, 0, outWidth, outHeight);
-                  if (monitorCtx) {
-                    monitorCtx.drawImage(video, staticCenterCrop.sx, staticCenterCrop.sy, staticCenterCrop.sw, staticCenterCrop.sh, 0, 0, outWidth, outHeight);
-                  }
-                } else if (window.smartTracker) {
-                  // High-End PC Mode: Full real-time AI Face & Subject centroid tracking
-                  const focal = window.smartTracker.trackSubject(video);
-                  const crop = window.smartTracker.calculateCrop(srcWidth, srcHeight, targetAspect, focal.x, focal.y);
-                  ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
-                  if (monitorCtx) {
-                    monitorCtx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
-                  }
-                } else {
-                  ctx.drawImage(video, 0, 0, outWidth, outHeight);
+        let animId = null;
+        function renderFrame() {
+          if (!isFinished && !video.paused && !video.ended) {
+            if (state.targetAspectRatio !== 'original') {
+              if (state.deviceProfile === 'mobile' && staticCenterCrop) {
+                // Fast Center Crop (Zero CPU/RAM overhead on 4-6 GB mobile)
+                ctx.drawImage(video, staticCenterCrop.sx, staticCenterCrop.sy, staticCenterCrop.sw, staticCenterCrop.sh, 0, 0, outWidth, outHeight);
+                if (monitorCtx) {
+                  monitorCtx.drawImage(video, staticCenterCrop.sx, staticCenterCrop.sy, staticCenterCrop.sw, staticCenterCrop.sh, 0, 0, outWidth, outHeight);
+                }
+              } else if (window.smartTracker) {
+                // High-End PC Mode: Full real-time AI Face & Subject centroid tracking
+                const focal = window.smartTracker.trackSubject(video);
+                const crop = window.smartTracker.calculateCrop(srcWidth, srcHeight, targetAspect, focal.x, focal.y);
+                ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
+                if (monitorCtx) {
+                  monitorCtx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
                 }
               } else {
                 ctx.drawImage(video, 0, 0, outWidth, outHeight);
-                if (monitorCtx) {
-                  monitorCtx.drawImage(video, 0, 0, outWidth, outHeight);
-                }
-              }
-              animId = requestAnimationFrame(renderFrame);
-            }
-          }
-
-          let recordStartTime = 0;
-          const targetDurationMs = targetDuration * 1000;
-
-          const playPromise = video.play();
-          if (playPromise !== undefined) {
-            playPromise.then(() => {
-              mediaRecorder.start(100);
-              recordStartTime = performance.now();
-              renderFrame();
-            }).catch(err => {
-              cleanup();
-              reject(new Error("Playback blocked by browser permissions."));
-            });
-          }
-
-          const clockCheckTimer = setInterval(() => {
-            if (!recordStartTime) return;
-            const elapsedMs = performance.now() - recordStartTime;
-            const currentVideoTime = video.currentTime;
-
-            if (elapsedMs >= targetDurationMs || currentVideoTime >= endTime || video.ended) {
-              clearInterval(clockCheckTimer);
-              if (animId) cancelAnimationFrame(animId);
-              video.pause();
-              if (mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
               }
             } else {
-              const cur = Math.max(0, Math.min(1, elapsedMs / targetDurationMs));
-              if (onProgress) onProgress(cur);
+              ctx.drawImage(video, 0, 0, outWidth, outHeight);
+              if (monitorCtx) {
+                monitorCtx.drawImage(video, 0, 0, outWidth, outHeight);
+              }
             }
-          }, 10);
-
-        } catch (err) {
-          cleanup();
-          reject(err);
+            animId = requestAnimationFrame(renderFrame);
+            currentRenderAnimId = animId;
+          }
         }
-      };
 
-      video.addEventListener('seeked', onSeekedHandler);
+        let recordStartTime = 0;
+        const targetDurationMs = targetDuration * 1000;
+
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise.then(() => {
+            mediaRecorder.start(100);
+            recordStartTime = performance.now();
+            renderFrame();
+          }).catch(err => {
+            cleanup();
+            reject(new Error("Playback blocked by browser permissions."));
+          });
+        }
+
+        const clockCheckTimer = setInterval(() => {
+          if (!recordStartTime) return;
+          const elapsedMs = performance.now() - recordStartTime;
+          const currentVideoTime = video.currentTime;
+
+          if (elapsedMs >= targetDurationMs || currentVideoTime >= endTime || video.ended) {
+            clearInterval(clockCheckTimer);
+            currentRenderClockTimer = null;
+            if (animId) cancelAnimationFrame(animId);
+            currentRenderAnimId = null;
+            video.pause();
+            if (mediaRecorder.state !== 'inactive') {
+              mediaRecorder.stop();
+            }
+          } else {
+            const cur = Math.max(0, Math.min(1, elapsedMs / targetDurationMs));
+            if (onProgress) onProgress(cur);
+          }
+        }, 10);
+        currentRenderClockTimer = clockCheckTimer;
+
+      } catch (err) {
+        cleanup();
+        reject(err);
+      }
     });
   }
 

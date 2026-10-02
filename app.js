@@ -747,6 +747,11 @@
             monitorCtx = renderCanvasDisplay.getContext('2d', { alpha: false });
           }
 
+          // Reset AI Subject Tracker focal center for this clip
+          if (window.smartTracker) {
+            window.smartTracker.reset();
+          }
+
           const stream = canvas.captureStream(30);
 
           // Route audio via Web Audio API (Option A) for guaranteed iOS / Chrome / Android audio

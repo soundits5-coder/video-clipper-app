@@ -1,0 +1,22 @@
+{
+  "name": "clipstream-studio",
+  "version": "1.0.0",
+  "description": "Next-Gen Autonomous Client-Side Video Intelligence & Clipper Engine",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "video-cutter",
+    "video-clipper",
+    "ffmpeg",
+    "wasm",
+    "client-side"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

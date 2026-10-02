@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="google" content="notranslate">
+  <title>ClipStream Studio - Next-Gen Autonomous Video Intelligence</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+</head>
+<body translate="no">
+  <!-- Header / Nav -->
+  <header class="app-header">
+    <div class="logo-group">
+      <div class="logo-icon">⚡</div>
+      <div class="logo-text">
+        <h1>ClipStream<span class="badge">PRO</span></h1>
+        <p class="tagline">Next-Generation Autonomous Neural Video Processing Engine • Limitless Performance</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <!-- Step 1: Upload / Dropzone -->
+    <section class="card upload-card" id="dropArea">
+      <input type="file" id="videoFileInput" accept="video/*" class="file-input-hidden">
+      
+      <div class="drop-zone-ui" id="dropZoneContent">
+        <div class="upload-icon-wrapper">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+        </div>
+        <h3>Select or Drop Your Video File</h3>
+        <p class="subtext">Supports MP4, WebM, MOV, MKV • Up to 4 Hours & 8K Ultra HD Resolution</p>
+        <button type="button" class="btn btn-primary pulse-btn" id="browseBtn">
+          📁 Choose Video File
+        </button>
+      </div>
+
+      <!-- Video Loaded Metadata Summary -->
+      <div class="video-meta-bar" id="videoMetaBar" style="display: none;">
+        <div class="meta-item">
+          <span class="label">File Name:</span>
+          <span class="value" id="metaFileName">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="label">Duration:</span>
+          <span class="value" id="metaDuration">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="label">File Size:</span>
+          <span class="value" id="metaSize">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="label">Resolution:</span>
+          <span class="value" id="metaResolution">-</span>
+        </div>
+        <button type="button" class="btn btn-sm btn-ghost" id="changeVideoBtn">Change File</button>
+      </div>
+    </section>
+
+    <!-- Video Preview Section -->
+    <section class="card preview-card" id="previewSection" style="display: none;">
+      <div class="video-wrapper">
+        <video id="mainVideo" controls playsinline preload="metadata"></video>
+      </div>
+    </section>
+
+    <!-- Dedicated Background Render Engine Video Element (Prevents main preview bar jumping) -->
+    <video id="renderVideo" playsinline muted preload="auto" style="position: absolute; width: 1px; height: 1px; opacity: 0.01; pointer-events: none; z-index: -999;"></video>
+
+    <!-- Step 2: Clip Settings -->
+    <section class="card config-card" id="configSection" style="display: none;">
+      <div class="section-title">
+        <span class="step-num">2</span>
+        <h2>Clip Configuration</h2>
+      </div>
+
+      <!-- Preset Grid / Quick Clip Buttons -->
+      <div class="config-group">
+        <label class="group-label">
+          <span>Number of Clips:</span>
+          <span class="hint" id="clipsHint">Select quick preset or enter custom number</span>
+        </label>
+        
+        <div class="clip-selector-grid">
+          <button type="button" class="clip-btn active" data-clips="1">1</button>
+          <button type="button" class="clip-btn" data-clips="2">2</button>
+          <button type="button" class="clip-btn" data-clips="3">3</button>
+          <button type="button" class="clip-btn" data-clips="4">4</button>
+          <button type="button" class="clip-btn" data-clips="5">5</button>
+          <button type="button" class="clip-btn" data-clips="6">6</button>
+          <button type="button" class="clip-btn" data-clips="7">7</button>
+          <button type="button" class="clip-btn" data-clips="8">8</button>
+          <button type="button" class="clip-btn" data-clips="9">9</button>
+          <button type="button" class="clip-btn" data-clips="10">10</button>
+          <button type="button" class="clip-btn custom-trigger" id="customClipsToggle">Custom (Manual)</button>
+        </div>
+
+        <div class="manual-input-box" id="manualClipsBox" style="display: none;">
+          <div class="input-inline">
+            <label for="customClipsInput">Enter manual number of clips:</label>
+            <input type="number" id="customClipsInput" min="1" max="100" placeholder="e.g. 15, 20">
+            <button type="button" class="btn btn-sm btn-secondary" id="applyManualClipsBtn">Apply</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Duration Selection Mode -->
+      <div class="config-group">
+        <label class="group-label">
+          <span>Split Strategy & Clip Duration:</span>
+        </label>
+
+        <div class="duration-modes">
+          <label class="radio-card">
+            <input type="radio" name="splitMode" value="auto-equal" checked>
+            <div class="radio-body">
+              <strong>Auto Equal Split</strong>
+              <span>Evenly slices entire video into identical clip lengths</span>
+            </div>
+          </label>
+
+          <label class="radio-card">
+            <input type="radio" name="splitMode" value="fixed-duration">
+            <div class="radio-body">
+              <strong>Fixed Duration per Clip</strong>
+              <span>Target exact length (e.g. 30s Reels, 60s Shorts, etc.)</span>
+            </div>
+          </label>
+        </div>
+
+        <!-- Duration Controls (if fixed duration selected) -->
+        <div class="duration-controls" id="durationControls" style="display: none;">
+          <div class="quick-duration-tags">
+            <button type="button" class="pill-btn" data-sec="15">15 Seconds (Story)</button>
+            <button type="button" class="pill-btn active" data-sec="30">30 Seconds (Reels)</button>
+            <button type="button" class="pill-btn" data-sec="60">60 Seconds (Shorts)</button>
+            <button type="button" class="pill-btn" data-sec="90">90 Seconds</button>
+            <button type="button" class="pill-btn" data-sec="180">3 Minutes</button>
+            <button type="button" class="pill-btn" data-sec="300">5 Minutes</button>
+          </div>
+
+          <div class="custom-time-row">
+            <div class="input-field">
+              <label>Minutes:</label>
+              <input type="number" id="customMinutes" min="0" max="240" value="0">
+            </div>
+            <div class="input-field">
+              <label>Seconds:</label>
+              <input type="number" id="customSeconds" min="0" max="59" value="30">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Video Quality Selection Option -->
+      <div class="config-group">
+        <label class="group-label">
+          <span>Export Quality:</span>
+          <span class="hint">Auto Selected: Original</span>
+        </label>
+        
+        <div class="quality-selector-container">
+          <!-- Default Original Selection -->
+          <button type="button" class="quality-btn active" data-quality="original">
+            <span class="quality-icon">✨</span>
+            <div class="quality-text">
+              <span class="quality-title">Original Quality</span>
+              <span class="quality-sub">(Lossless Source Quality • 8K / 4K / Full HD)</span>
+            </div>
+          </button>
+
+          <!-- Custom Quality Resolution Grid (144p to 1080p) -->
+          <div class="quality-resolution-grid">
+            <button type="button" class="quality-pill" data-quality="1080">1080p (Full HD)</button>
+            <button type="button" class="quality-pill" data-quality="720">720p (HD)</button>
+            <button type="button" class="quality-pill" data-quality="480">480p</button>
+            <button type="button" class="quality-pill" data-quality="360">360p</button>
+            <button type="button" class="quality-pill" data-quality="240">240p</button>
+            <button type="button" class="quality-pill" data-quality="144">144p</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Calculation Summary Panel -->
+      <div class="calc-panel" id="calcPanel">
+        <div class="calc-header">
+          <span>📊 Real-Time Slice Calculation</span>
+          <span class="calc-badge" id="calcValidityBadge">Valid</span>
+        </div>
+        <div class="calc-grid">
+          <div class="calc-box">
+            <span class="title">Total Clips</span>
+            <span class="metric" id="calcTotalClips">1</span>
+          </div>
+          <div class="calc-box">
+            <span class="title">Length per Clip</span>
+            <span class="metric" id="calcClipLength">--:--</span>
+          </div>
+          <div class="calc-box">
+            <span class="title">Covered Time</span>
+            <span class="metric" id="calcCoveredTime">--:--</span>
+          </div>
+        </div>
+        <div class="calc-timeline" id="calcTimeline"></div>
+      </div>
+
+      <!-- Turbo Processing Mode Settings -->
+      <div class="config-group" style="margin-top: 1.5rem;">
+        <label class="group-label">
+          <span>⚡ Rendering & Export Speed (Processing Acceleration):</span>
+          <span class="hint" style="color: #06b6d4;">Turbo 8x Recommended</span>
+        </label>
+        
+        <div class="speed-modes-grid">
+          <button type="button" class="speed-btn" data-speed="1">
+            <span class="speed-val">1x</span>
+            <span class="speed-name">Standard</span>
+          </button>
+          <button type="button" class="speed-btn" data-speed="2">
+            <span class="speed-val">2x</span>
+            <span class="speed-name">Fast</span>
+          </button>
+          <button type="button" class="speed-btn" data-speed="4">
+            <span class="speed-val">4x</span>
+            <span class="speed-name">Super Fast</span>
+          </button>
+          <button type="button" class="speed-btn active" data-speed="8">
+            <span class="speed-val">8x ⚡</span>
+            <span class="speed-name">Turbo Render</span>
+          </button>
+          <button type="button" class="speed-btn" data-speed="16">
+            <span class="speed-val">16x 🚀</span>
+            <span class="speed-name">Ultra Render</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Step 3: Action Buttons -->
+      <div class="action-bar">
+        <button type="button" class="btn btn-primary btn-large" id="startClipperBtn">
+          🚀 Generate & Export Clips Now
+        </button>
+      </div>
+    </section>
+
+    <!-- Progress / Export Section -->
+    <section class="card progress-card" id="progressSection" style="display: none;">
+      <div class="section-title">
+        <span class="step-num">3</span>
+        <h2>Export Status & Downloads</h2>
+      </div>
+
+      <div class="progress-box">
+        <div class="render-monitor-wrapper" id="renderMonitorBox" style="margin-bottom: 1rem; border-radius: var(--radius-sm); overflow: hidden; background: #000; display: flex; flex-direction: column; align-items: center; border: 1px solid #1e293b;">
+          <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; background: #0f172a; font-size: 0.78rem; color: var(--accent); font-weight: 600; border-bottom: 1px solid #1e293b;">
+            <span>🔴 Live Clip Rendering Feed</span>
+            <span id="renderClipBadge">Clip 1</span>
+          </div>
+          <canvas id="renderCanvasDisplay" style="width: 100%; max-height: 220px; object-fit: contain; background: #000;"></canvas>
+        </div>
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+        </div>
+        <div class="progress-meta">
+          <span id="progressStatusText">Rendering video clip...</span>
+          <span id="progressPercentText">0%</span>
+        </div>
+      </div>
+
+      <!-- Results Grid -->
+      <div class="clips-results-grid" id="clipsResultsGrid"></div>
+
+      <div class="export-all-bar" id="exportAllBar" style="display: none;">
+        <button type="button" class="btn btn-success btn-large" id="downloadAllBtn">
+          📦 Download All Clips Together
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p>ClipStream Studio • High Performance Video Engine</p>
+  </footer>
+
+  <script src="vendor/ffmpeg.js"></script>
+  <script src="vendor/index.js"></script>
+  <script src="webm-fix.js"></script>
+  <script src="webcodecs-engine.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

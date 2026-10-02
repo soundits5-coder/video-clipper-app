@@ -563,10 +563,10 @@
   function extractClipAccurate(startTime, endTime, targetDuration, clipIndex, totalClips, onProgress) {
     return new Promise((resolve, reject) => {
       const video = renderVideo;
-      video.muted = false;
-      video.volume = 0.0001;
+      video.muted = true; // Muted is mandatory for guaranteed mobile autoplay & background render
       
-      const speed = state.renderSpeedMultiplier || 1;
+      // Speed multiplier accelerates rendering pipeline processing
+      const speed = Math.max(1, state.renderSpeedMultiplier || 1);
       video.playbackRate = speed;
       video.currentTime = startTime;
 
@@ -750,6 +750,21 @@
     });
   }
 
+  // Reliable Universal Download Trigger (Works seamlessly on Mobile Android/iOS & Desktop)
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 2000);
+  }
+
   // Render individual clip card in results
   function renderClipResult(clip) {
     const card = document.createElement('div');
@@ -765,10 +780,17 @@
         <span>Size: ${formatBytes(clip.blob.size)}</span>
         <span>${Math.round(clip.duration)}s</span>
       </div>
-      <a href="${clip.url}" download="${clip.name}" class="btn btn-primary btn-sm" style="text-decoration:none;">
+      <button type="button" class="btn btn-primary btn-sm single-dl-btn" data-index="${clip.index}">
         ⬇️ Download Clip
-      </a>
+      </button>
     `;
+
+    const dlBtn = card.querySelector('.single-dl-btn');
+    if (dlBtn) {
+      dlBtn.addEventListener('click', () => {
+        triggerDownload(clip.blob, clip.name);
+      });
+    }
 
     clipsResultsGrid.appendChild(card);
   }
@@ -779,13 +801,8 @@
 
     state.generatedClips.forEach((clip, index) => {
       setTimeout(() => {
-        const a = document.createElement('a');
-        a.href = clip.url;
-        a.download = clip.name;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }, index * 400);
+        triggerDownload(clip.blob, clip.name);
+      }, index * 800);
     });
   });
 

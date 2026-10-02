@@ -71,8 +71,8 @@
       </div>
     </section>
 
-    <!-- Dedicated Background Render Engine Video Element (Prevents main preview bar jumping) -->
-    <video id="renderVideo" playsinline muted preload="auto" style="position: absolute; width: 1px; height: 1px; opacity: 0.01; pointer-events: none; z-index: -999;"></video>
+    <!-- Dedicated Background Render Engine Video Element (Off-screen, playsinline, muted for universal mobile support) -->
+    <video id="renderVideo" playsinline muted autoplay style="position: fixed; left: -9999px; top: 0; width: 320px; height: 180px; pointer-events: none; opacity: 0.001; z-index: -999;"></video>
 
     <!-- Step 2: Clip Settings -->
     <section class="card config-card" id="configSection" style="display: none;">

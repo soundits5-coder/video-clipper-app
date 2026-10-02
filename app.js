@@ -17,6 +17,7 @@
     totalClips: 1,
     splitMode: 'auto-equal',
     fixedDurationSec: 30,
+    targetAspectRatio: 'original',
     exportQuality: 'original',
     renderSpeedMultiplier: 8,
     generatedClips: [],
@@ -313,6 +314,24 @@
     });
   });
 
+  // Aspect Ratio & AI Smart Reframe Handlers
+  const aspectButtons = document.querySelectorAll('.aspect-btn[data-aspect]');
+  const aspectRatioHint = document.getElementById('aspectRatioHint');
+  aspectButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      aspectButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const aspect = btn.getAttribute('data-aspect');
+      state.targetAspectRatio = aspect;
+      if (aspectRatioHint) {
+        if (aspect === 'original') aspectRatioHint.textContent = 'Original Orientation';
+        else if (aspect === '16:9') aspectRatioHint.textContent = '16:9 Landscape (AI Tracks Subject)';
+        else if (aspect === '9:16') aspectRatioHint.textContent = '9:16 Vertical (AI Tracks Face)';
+        else if (aspect === '1:1') aspectRatioHint.textContent = '1:1 Square (AI Centered)';
+      }
+    });
+  });
+
   // Speed Modes Event Handlers
   const speedButtons = document.querySelectorAll('.speed-btn[data-speed]');
   speedButtons.forEach(btn => {
@@ -576,18 +595,34 @@
         video.removeEventListener('seeked', onSeekedHandler);
 
         try {
-          let outWidth = video.videoWidth || 1280;
-          let outHeight = video.videoHeight || 720;
+          const srcWidth = video.videoWidth || 1280;
+          const srcHeight = video.videoHeight || 720;
+          let targetAspect = srcWidth / srcHeight;
+
+          if (state.targetAspectRatio === '16:9') targetAspect = 16 / 9;
+          else if (state.targetAspectRatio === '9:16') targetAspect = 9 / 16;
+          else if (state.targetAspectRatio === '1:1') targetAspect = 1.0;
+
+          let outWidth = srcWidth;
+          let outHeight = srcHeight;
           const targetQuality = state.exportQuality;
 
           if (targetQuality !== 'original') {
             const th = parseInt(targetQuality, 10);
-            const aspect = (video.videoWidth && video.videoHeight) ? (video.videoWidth / video.videoHeight) : (16 / 9);
             outHeight = th;
-            outWidth = Math.round(th * aspect);
-            if (outWidth % 2 !== 0) outWidth++;
-            if (outHeight % 2 !== 0) outHeight++;
+            outWidth = Math.round(th * targetAspect);
+          } else {
+            if (targetAspect > 1) {
+              outHeight = Math.min(srcHeight, 1080);
+              outWidth = Math.round(outHeight * targetAspect);
+            } else {
+              outWidth = Math.min(srcWidth, 1080);
+              outHeight = Math.round(outWidth / targetAspect);
+            }
           }
+
+          if (outWidth % 2 !== 0) outWidth++;
+          if (outHeight % 2 !== 0) outHeight++;
 
           const canvas = document.createElement('canvas');
           canvas.width = outWidth;
@@ -600,6 +635,11 @@
             renderCanvasDisplay.width = outWidth;
             renderCanvasDisplay.height = outHeight;
             monitorCtx = renderCanvasDisplay.getContext('2d', { alpha: false });
+          }
+
+          // Reset AI Subject Tracker for this clip
+          if (window.smartTracker) {
+            window.smartTracker.reset();
           }
 
           const stream = canvas.captureStream(30);
@@ -647,9 +687,21 @@
           let animId = null;
           function renderFrame() {
             if (!isFinished && !video.paused && !video.ended) {
-              ctx.drawImage(video, 0, 0, outWidth, outHeight);
-              if (monitorCtx) {
-                monitorCtx.drawImage(video, 0, 0, outWidth, outHeight);
+              if (state.targetAspectRatio !== 'original' && window.smartTracker) {
+                // AI Face & Subject Centroid Tracking
+                const focal = window.smartTracker.trackSubject(video);
+                const crop = window.smartTracker.calculateCrop(srcWidth, srcHeight, targetAspect, focal.x, focal.y);
+
+                // Draw smartly reframed viewport
+                ctx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
+                if (monitorCtx) {
+                  monitorCtx.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, outWidth, outHeight);
+                }
+              } else {
+                ctx.drawImage(video, 0, 0, outWidth, outHeight);
+                if (monitorCtx) {
+                  monitorCtx.drawImage(video, 0, 0, outWidth, outHeight);
+                }
               }
               animId = requestAnimationFrame(renderFrame);
             }

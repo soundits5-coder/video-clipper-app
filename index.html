@@ -159,6 +159,48 @@
         </div>
       </div>
 
+      <!-- Aspect Ratio & AI Smart Reframe -->
+      <div class="config-group">
+        <label class="group-label">
+          <span>Aspect Ratio & AI Auto-Reframe:</span>
+          <span class="hint" id="aspectRatioHint">Original Orientation</span>
+        </label>
+        
+        <div class="aspect-ratio-grid">
+          <button type="button" class="aspect-btn active" data-aspect="original">
+            <span class="aspect-icon">📐</span>
+            <div class="aspect-details">
+              <strong>Original</strong>
+              <span>Preserve source framing</span>
+            </div>
+          </button>
+
+          <button type="button" class="aspect-btn" data-aspect="16:9">
+            <span class="aspect-icon">🖥️</span>
+            <div class="aspect-details">
+              <strong>16:9 Landscape</strong>
+              <span>Horizontal / YouTube (AI Tracks Subject)</span>
+            </div>
+          </button>
+
+          <button type="button" class="aspect-btn" data-aspect="9:16">
+            <span class="aspect-icon">📱</span>
+            <div class="aspect-details">
+              <strong>9:16 Vertical</strong>
+              <span>Reels / Shorts (AI Tracks Face)</span>
+            </div>
+          </button>
+
+          <button type="button" class="aspect-btn" data-aspect="1:1">
+            <span class="aspect-icon">⏹️</span>
+            <div class="aspect-details">
+              <strong>1:1 Square</strong>
+              <span>Instagram / Feed</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
       <!-- Video Quality Selection Option -->
       <div class="config-group">
         <label class="group-label">
@@ -293,6 +335,7 @@
   <script src="vendor/index.js"></script>
   <script src="webm-fix.js"></script>
   <script src="webcodecs-engine.js"></script>
+  <script src="smart-tracker.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

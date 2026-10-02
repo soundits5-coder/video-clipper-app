@@ -114,6 +114,46 @@
     getFFmpeg().catch(() => {});
   }, 1000);
 
+  // Web Audio API Pipeline for Guaranteed Mobile & iOS Audio Capture (Option A)
+  let audioCtx = null;
+  let audioSourceNode = null;
+  let audioDestNode = null;
+  let audioGainNode = null;
+
+  function initWebAudioPipeline() {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return null;
+
+      if (!audioCtx) {
+        audioCtx = new AudioContextClass();
+      }
+
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+
+      if (!audioSourceNode && renderVideo) {
+        // createMediaElementSource can ONLY be called once per HTMLMediaElement
+        audioSourceNode = audioCtx.createMediaElementSource(renderVideo);
+        audioDestNode = audioCtx.createMediaStreamDestination();
+        audioGainNode = audioCtx.createGain();
+        // Silent monitoring gain (0.0001) so background render doesn't deafen user,
+        // but keeps AudioContext active and avoids mobile autoplay muting
+        audioGainNode.gain.value = 0.0001;
+
+        audioSourceNode.connect(audioDestNode);
+        audioSourceNode.connect(audioGainNode);
+        audioGainNode.connect(audioCtx.destination);
+      }
+
+      return { audioCtx, audioDestNode };
+    } catch (err) {
+      console.warn("Web Audio Pipeline init notice:", err);
+      return null;
+    }
+  }
+
   // Formatting Helpers
   function formatTime(seconds) {
     if (isNaN(seconds) || seconds < 0) return '00:00';
@@ -202,6 +242,9 @@
     metaSize.textContent = formatBytes(file.size);
     metaDuration.textContent = 'Loading...';
     metaResolution.textContent = 'Detecting...';
+
+    mainVideo.crossOrigin = 'anonymous';
+    renderVideo.crossOrigin = 'anonymous';
 
     mainVideo.src = state.fileUrl;
     renderVideo.src = state.fileUrl;
@@ -475,6 +518,9 @@
       return;
     }
 
+    // Crucial for iOS Safari / iOS Chrome: Unlock and resume AudioContext on user gesture
+    initWebAudioPipeline();
+
     progressSection.style.display = 'block';
     progressSection.scrollIntoView({ behavior: 'smooth' });
     progressBarFill.style.width = '0%';
@@ -623,7 +669,10 @@
   function extractClipAccurate(startTime, endTime, targetDuration, clipIndex, totalClips, onProgress) {
     return new Promise((resolve, reject) => {
       const video = renderVideo;
-      video.muted = true; // Muted is mandatory for guaranteed mobile autoplay & background render
+      // Do NOT set video.muted = true because Web Audio API captures from the element's output.
+      // Audio silence is handled cleanly by audioGainNode.gain.value = 0.0001
+      video.muted = false;
+      video.volume = 1.0;
       
       // Video must render at exact 1.0x original speed and frame rate
       video.playbackRate = 1.0;
@@ -698,30 +747,35 @@
             monitorCtx = renderCanvasDisplay.getContext('2d', { alpha: false });
           }
 
-          // Reset AI Subject Tracker for this clip
-          if (window.smartTracker) {
-            window.smartTracker.reset();
-          }
-
           const stream = canvas.captureStream(30);
 
-          // Temporarily unmute so captureStream() exposes audio tracks.
-          // video.muted suppresses audio tracks in the captured stream even if
-          // the source has audio — the browser simply returns 0 audio tracks.
-          // We re-mute immediately after grabbing the track so no sound plays.
-          video.muted = false;
-          let videoStream = null;
-          if (video.captureStream) videoStream = video.captureStream();
-          else if (video.mozCaptureStream) videoStream = video.mozCaptureStream();
-          video.muted = true; // re-mute so render is silent (audio is in the stream track)
+          // Route audio via Web Audio API (Option A) for guaranteed iOS / Chrome / Android audio
+          const webAudio = initWebAudioPipeline();
+          let audioTrackAdded = false;
 
-          if (videoStream) {
-            const audioTracks = videoStream.getAudioTracks();
-            if (audioTracks && audioTracks.length > 0) {
-              stream.addTrack(audioTracks[0]);
+          if (webAudio && webAudio.audioDestNode && webAudio.audioDestNode.stream) {
+            const webAudioTracks = webAudio.audioDestNode.stream.getAudioTracks();
+            if (webAudioTracks && webAudioTracks.length > 0) {
+              stream.addTrack(webAudioTracks[0]);
+              audioTrackAdded = true;
             }
           }
 
+          // Fallback if Web Audio was unavailable
+          if (!audioTrackAdded) {
+            let videoStream = null;
+            if (video.captureStream) videoStream = video.captureStream();
+            else if (video.mozCaptureStream) videoStream = video.mozCaptureStream();
+
+            if (videoStream) {
+              const audioTracks = videoStream.getAudioTracks();
+              if (audioTracks && audioTracks.length > 0) {
+                stream.addTrack(audioTracks[0]);
+              }
+            }
+          }
+
+          // Pick MediaRecorder mimeType prioritizing MP4 (essential on iOS WebKit where webm is unsupported)
           const mimeTypes = [
             'video/mp4;codecs=avc1,mp4a.40.2',
             'video/mp4;codecs=avc1',
@@ -730,7 +784,13 @@
             'video/webm;codecs=vp8,opus',
             'video/webm'
           ];
-          let chosenMime = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+          let chosenMime = mimeTypes.find(type => {
+            try {
+              return MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type);
+            } catch (e) {
+              return false;
+            }
+          }) || '';
           const options = chosenMime ? { mimeType: chosenMime } : {};
 
           const mediaRecorder = new MediaRecorder(stream, options);
@@ -831,25 +891,75 @@
     });
   }
 
-  // Reliable Universal Download Trigger (Works seamlessly on Mobile Android/iOS & Desktop)
-  function triggerDownload(blob, filename) {
+  // Problem 2: Guaranteed Universal Download & Share Helper for iOS Safari, iOS Chrome, Android & Desktop
+  async function triggerDownload(blob, filename, fallbackContainer = null) {
+    const mimeType = blob.type || 'video/mp4';
+
+    // 1. Priority 1: Web Share API (native sheet for iOS / Android)
+    if (navigator.canShare && window.File) {
+      try {
+        const file = new File([blob], filename, { type: mimeType });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: filename,
+            text: `Exported video clip: ${filename}`
+          });
+          return; // Share completed successfully
+        }
+      } catch (err) {
+        // Handle AbortError silently (user simply cancelled the iOS/Android share sheet)
+        if (err.name === 'AbortError') {
+          console.log("User cancelled share dialog.");
+          return;
+        }
+        console.warn("navigator.share notice, falling back to download:", err);
+      }
+    }
+
+    // 2. Priority 2: Standard <a download> click (Works smoothly on Desktop & Android Chrome)
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.style.display = 'none';
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 2000);
+    try {
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        // Safe 60-second delay before revoking to avoid dropping active downloads on mobile
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      }, 500);
+    } catch (e) {
+      console.warn("a.download failed:", e);
+    }
+
+    // 3. Priority 3: Visible fallback link button if container element is provided
+    if (fallbackContainer) {
+      let openLink = fallbackContainer.querySelector('.open-fallback-btn');
+      if (!openLink) {
+        openLink = document.createElement('a');
+        openLink.className = 'btn btn-secondary btn-sm open-fallback-btn';
+        openLink.style.marginTop = '6px';
+        openLink.style.display = 'inline-block';
+        openLink.target = '_blank';
+        openLink.rel = 'noopener noreferrer';
+        openLink.textContent = '↗️ Open Video (Long press to Save)';
+        openLink.href = url;
+        fallbackContainer.appendChild(openLink);
+      }
+    }
   }
 
   // Render individual clip card in results
   function renderClipResult(clip) {
     const card = document.createElement('div');
     card.className = 'clip-result-card';
+
+    // Detect if platform supports native File sharing (iOS / mobile)
+    const hasShare = !!(navigator.canShare && window.File);
+    const actionLabel = hasShare ? '💾 Save / Share Video' : '⬇️ Download Clip';
 
     card.innerHTML = `
       <video class="clip-preview-video" src="${clip.url}" controls playsinline preload="metadata"></video>
@@ -861,15 +971,18 @@
         <span>Size: ${formatBytes(clip.blob.size)}</span>
         <span>${Math.round(clip.duration)}s</span>
       </div>
-      <button type="button" class="btn btn-primary btn-sm single-dl-btn" data-index="${clip.index}">
-        ⬇️ Download Clip
-      </button>
+      <div class="clip-actions-container" style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px;">
+        <button type="button" class="btn btn-primary btn-sm single-dl-btn" data-index="${clip.index}">
+          ${actionLabel}
+        </button>
+      </div>
     `;
 
     const dlBtn = card.querySelector('.single-dl-btn');
+    const actionsContainer = card.querySelector('.clip-actions-container');
     if (dlBtn) {
       dlBtn.addEventListener('click', () => {
-        triggerDownload(clip.blob, clip.name);
+        triggerDownload(clip.blob, clip.name, actionsContainer);
       });
     }
 

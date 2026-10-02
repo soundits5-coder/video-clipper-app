@@ -519,6 +519,10 @@
         console.warn("Duration verification notice:", err);
       }
       
+      // Derive the correct extension from the actual container the browser produced.
+      // MediaRecorder on most browsers outputs video/webm even when mp4 is preferred.
+      // Saving a WebM blob as .mp4 causes broken/refused downloads on mobile & some desktops.
+      const blobExt = finalBlob.type.includes('mp4') ? 'mp4' : 'webm';
       const clipObj = {
         index: i + 1,
         blob: finalBlob,
@@ -526,7 +530,7 @@
         start: slice.start,
         end: slice.end,
         duration: slice.duration,
-        name: `clip_${i + 1}_${Math.round(slice.start)}s-${Math.round(slice.end)}s.mp4`
+        name: `clip_${i + 1}_${Math.round(slice.start)}s-${Math.round(slice.end)}s.${blobExt}`
       };
 
       accumulatedCompletedDuration += slice.duration;
@@ -650,9 +654,15 @@
 
           const stream = canvas.captureStream(30);
 
+          // Temporarily unmute so captureStream() exposes audio tracks.
+          // video.muted suppresses audio tracks in the captured stream even if
+          // the source has audio — the browser simply returns 0 audio tracks.
+          // We re-mute immediately after grabbing the track so no sound plays.
+          video.muted = false;
           let videoStream = null;
           if (video.captureStream) videoStream = video.captureStream();
           else if (video.mozCaptureStream) videoStream = video.mozCaptureStream();
+          video.muted = true; // re-mute so render is silent (audio is in the stream track)
 
           if (videoStream) {
             const audioTracks = videoStream.getAudioTracks();

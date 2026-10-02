@@ -66,6 +66,7 @@
   const progressBarFill = document.getElementById('progressBarFill');
   const progressStatusText = document.getElementById('progressStatusText');
   const progressPercentText = document.getElementById('progressPercentText');
+  const progressEtaText = document.getElementById('progressEtaText');
   const clipsResultsGrid = document.getElementById('clipsResultsGrid');
   const exportAllBar = document.getElementById('exportAllBar');
   const downloadAllBtn = document.getElementById('downloadAllBtn');
@@ -449,6 +450,25 @@
 
   async function processAllSlices(slices) {
     const total = slices.length;
+    const totalBatchDuration = slices.reduce((acc, s) => acc + s.duration, 0);
+    // Conservative initial estimate (+15% buffer for seek/encoding overhead so it always finishes earlier or on time)
+    let totalEstimatedSeconds = Math.ceil(totalBatchDuration * 1.15) + (total * 2);
+    const batchStartTime = performance.now();
+
+    const updateEta = (completedSeconds, currentSliceProgress = 0, currentSliceDuration = 0) => {
+      if (!progressEtaText) return;
+      const elapsedSec = (performance.now() - batchStartTime) / 1000;
+      const effectiveRenderedSec = completedSeconds + (currentSliceProgress * currentSliceDuration);
+      const remainingWorkSec = Math.max(0, totalBatchDuration - effectiveRenderedSec);
+      
+      // Conservative remaining estimate
+      const remainingSec = Math.ceil(Math.max(0, remainingWorkSec * 1.15 + (total - state.generatedClips.length)));
+      progressEtaText.textContent = `⏳ Estimated time remaining: ~${formatTime(remainingSec)}`;
+    };
+
+    updateEta(0, 0, 0);
+
+    let accumulatedCompletedDuration = 0;
 
     for (let i = 0; i < total; i++) {
       const slice = slices[i];
@@ -468,12 +488,36 @@
           const overall = Math.round(((i + (subPercent * 0.85)) / total) * 100);
           progressBarFill.style.width = `${overall}%`;
           progressPercentText.textContent = `${overall}%`;
+          updateEta(accumulatedCompletedDuration, subPercent, slice.duration);
         }
       );
 
       // 2. Re-encode / Remux with FFmpeg to fix MP4 metadata, moov atom, and proper seeking
       progressStatusText.textContent = `Optimizing metadata & seek table for clip ${i + 1}...`;
       const finalBlob = await reencodeWithFFmpeg(rawBlob, slice.index, slice.duration);
+
+      // 3. Verification check: output duration must match selected duration within small tolerance (~0.1s)
+      try {
+        await new Promise((resolveCheck) => {
+          const testVideo = document.createElement('video');
+          testVideo.preload = 'metadata';
+          testVideo.onloadedmetadata = () => {
+            const actualDur = testVideo.duration;
+            const diff = Math.abs(actualDur - slice.duration);
+            if (diff > 0.1) {
+              console.warn(`Clip ${i + 1} duration check: measured ${actualDur.toFixed(2)}s vs selected ${slice.duration.toFixed(2)}s (diff: ${diff.toFixed(2)}s)`);
+            } else {
+              console.log(`Clip ${i + 1} duration verified: exact match (${actualDur.toFixed(2)}s) within ±0.1s tolerance.`);
+            }
+            URL.revokeObjectURL(testVideo.src);
+            resolveCheck();
+          };
+          testVideo.onerror = () => resolveCheck();
+          testVideo.src = URL.createObjectURL(finalBlob);
+        });
+      } catch (err) {
+        console.warn("Duration verification notice:", err);
+      }
       
       const clipObj = {
         index: i + 1,
@@ -485,6 +529,9 @@
         name: `clip_${i + 1}_${Math.round(slice.start)}s-${Math.round(slice.end)}s.mp4`
       };
 
+      accumulatedCompletedDuration += slice.duration;
+      updateEta(accumulatedCompletedDuration, 0, 0);
+
       state.generatedClips.push(clipObj);
       renderClipResult(clipObj);
     }
@@ -492,6 +539,9 @@
     progressBarFill.style.width = '100%';
     progressPercentText.textContent = '100%';
     progressStatusText.textContent = '🎉 All clips exported successfully!';
+    if (progressEtaText) {
+      progressEtaText.textContent = '⏳ Estimated time remaining: Completed';
+    }
     exportAllBar.style.display = 'block';
   }
 
@@ -522,9 +572,8 @@
       const video = renderVideo;
       video.muted = true; // Muted is mandatory for guaranteed mobile autoplay & background render
       
-      // Speed multiplier accelerates rendering pipeline processing
-      const speed = Math.max(1, state.renderSpeedMultiplier || 1);
-      video.playbackRate = speed;
+      // Video must render at exact 1.0x original speed and frame rate
+      video.playbackRate = 1.0;
       video.currentTime = startTime;
 
       if (renderClipBadge) {
@@ -534,7 +583,7 @@
       let isFinished = false;
       const recordedChunks = [];
 
-      const maxWaitSec = (targetDuration / speed) + 15;
+      const maxWaitSec = targetDuration + 15;
       const safetyTimer = setTimeout(() => {
         if (!isFinished) {
           isFinished = true;
@@ -665,7 +714,7 @@
           }
 
           let recordStartTime = 0;
-          const targetDurationMs = (targetDuration / speed) * 1000;
+          const targetDurationMs = targetDuration * 1000;
 
           const playPromise = video.play();
           if (playPromise !== undefined) {

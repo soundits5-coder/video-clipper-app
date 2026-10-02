@@ -311,7 +311,10 @@
           <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
         </div>
         <div class="progress-meta">
-          <span id="progressStatusText">Rendering video clip...</span>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <span id="progressStatusText">Rendering video clip...</span>
+            <span id="progressEtaText" style="font-size: 0.8rem; color: #06b6d4; font-weight: 600;">⏳ Estimated time remaining: Calculating...</span>
+          </div>
           <span id="progressPercentText">0%</span>
         </div>
       </div>
